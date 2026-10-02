@@ -10,6 +10,7 @@ load_dotenv()
 TOKEN = os.getenv("DISCORD_TOKEN")
 WELCOME_CHANNEL_ID = os.getenv("WELCOME_CHANNEL_ID")
 HANI_LINK_URL = os.getenv("HANI_LINK_URL", "https://example.com")
+GUILD_ID = os.getenv("GUILD_ID")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -27,10 +28,29 @@ tree = app_commands.CommandTree(client)
 @client.event
 async def on_ready():
     log.info("Logged in as %s (id=%s)", client.user, client.user.id)
-    if not getattr(client, "_commands_synced", False):
-        await tree.sync()
+    if getattr(client, "_commands_synced", False):
+        return
+    try:
+        if GUILD_ID:
+            guild = discord.Object(id=int(GUILD_ID))
+            tree.copy_global_to(guild=guild)
+            synced = await tree.sync(guild=guild)
+            log.info("Synced %d guild commands to %s (instant)", len(synced), GUILD_ID)
+        else:
+            # Guild sync is instant; global sync can take up to 1 hour to appear.
+            for guild in client.guilds:
+                tree.copy_global_to(guild=guild)
+                synced = await tree.sync(guild=guild)
+                log.info(
+                    "Synced %d guild commands to %s (instant)",
+                    len(synced),
+                    guild.id,
+                )
+            synced = await tree.sync()
+            log.info("Synced %d global commands", len(synced))
         client._commands_synced = True
-        log.info("Synced slash commands")
+    except Exception:
+        log.exception("Failed to sync slash commands")
 
 
 @client.event
