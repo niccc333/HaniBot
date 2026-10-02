@@ -11,6 +11,8 @@ TOKEN = os.getenv("DISCORD_TOKEN")
 WELCOME_CHANNEL_ID = os.getenv("WELCOME_CHANNEL_ID")
 HANI_LINK_URL = os.getenv("HANI_LINK_URL", "https://example.com")
 GUILD_ID = os.getenv("GUILD_ID")
+# Default Discord "Wave" sticker (Wumpus waves hello, animated Lottie)
+WELCOME_STICKER_ID = os.getenv("WELCOME_STICKER_ID", "749054660769218631")
 
 logging.basicConfig(
     level=logging.INFO,
@@ -71,9 +73,16 @@ async def on_member_join(member: discord.Member):
         return
 
     try:
-        await channel.send(
-            f"Welcome {member.mention} to {member.guild.name}! I'm Hani \U0001F338"
-        )
+        # Sticker-only wave (no text). Falls back to 👋 if sticker send fails.
+        try:
+            sticker = await client.fetch_sticker(int(WELCOME_STICKER_ID))
+            await channel.send(stickers=[sticker])
+        except (ValueError, discord.NotFound, discord.Forbidden, discord.HTTPException):
+            log.exception(
+                "Could not send wave sticker %r, falling back to emoji",
+                WELCOME_STICKER_ID,
+            )
+            await channel.send(f"👋 {member.mention}")
     except discord.Forbidden:
         log.error("Missing permission to send in channel %s", channel.id)
 
