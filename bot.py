@@ -390,7 +390,8 @@ async def on_member_join(member: discord.Member):
         return
 
     try:
-        # Sticker-only wave (no text). Falls back to 👋 if sticker send fails.
+        # 1) Welcome text tagging the new member, 2) wave sticker/gif as its own message.
+        await channel.send(f"Welcome {member.mention} to QUARCC! I'm Hani")
         try:
             sticker = await client.fetch_sticker(int(WELCOME_STICKER_ID))
             await channel.send(stickers=[sticker])
@@ -399,7 +400,7 @@ async def on_member_join(member: discord.Member):
                 "Could not send wave sticker %r, falling back to emoji",
                 WELCOME_STICKER_ID,
             )
-            await channel.send(f"👋 {member.mention}")
+            await channel.send("👋")
     except discord.Forbidden:
         log.error("Missing permission to send in channel %s", channel.id)
 

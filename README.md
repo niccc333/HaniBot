@@ -101,9 +101,9 @@ answers `GET /` with `200 OK` so the service stays green.
    - Optional but recommended: add an UptimeRobot / BetterUptime / cron-job.org monitor
      pinging `https://<your-service>.up.railway.app/` every 5 minutes so you get alerted
      if it ever goes down. The endpoint always returns `OK: Hani is alive`.
-   - `birthdays.csv` is gitignored, so Railway won't have it — upload your birthday list
-     via Railway **Volumes** (mount at `/app`, put `birthdays.csv` there) or switch
-     `BIRTHDAY_CSV_PATH` to a hosted source later. Without the file Hani logs
+   - `birthdays.csv` is gitignored, so Railway won't have it — persist it on a
+     Railway **Volume** mounted at `/data` and set `BIRTHDAY_CSV_PATH=/data/birthdays.csv`
+     (see "Birthday file on Railway" below). Without the file Hani logs
      `Birthday CSV not found` and posts nothing (never crashes).
 
 > Security: never put your real `DISCORD_TOKEN` in code or `.env.example`.
