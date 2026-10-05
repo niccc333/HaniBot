@@ -3,6 +3,8 @@ import datetime
 import logging
 import os
 import random
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -13,21 +15,27 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-TOKEN = os.getenv("DISCORD_TOKEN")
-WELCOME_CHANNEL_ID = os.getenv("WELCOME_CHANNEL_ID")
-HANI_LINK_URL = os.getenv("HANI_LINK_URL", "https://example.com")
-GUILD_ID = os.getenv("GUILD_ID")
+
+def _clean_env(name: str, default: str = "") -> str:
+    """Get env var stripped of whitespace. Empty string if unset."""
+    return (os.getenv(name, default) or "").strip()
+
+
+TOKEN = _clean_env("DISCORD_TOKEN")
+WELCOME_CHANNEL_ID = _clean_env("WELCOME_CHANNEL_ID")
+HANI_LINK_URL = _clean_env("HANI_LINK_URL", "https://example.com") or "https://example.com"
+GUILD_ID = _clean_env("GUILD_ID")
 # Default Discord "Wave" sticker (Wumpus waves hello, animated Lottie)
-WELCOME_STICKER_ID = os.getenv("WELCOME_STICKER_ID", "749054660769218631")
+WELCOME_STICKER_ID = _clean_env("WELCOME_STICKER_ID", "749054660769218631") or "749054660769218631"
 
 # --- Birthdays ---
-# WHERE TO PUT THE BIRTHDAY CHANNEL ID:
+# Birthdays post ONLY to this channel ID — no fallback to any other channel.
 # Discord with Developer Mode ON > right-click your birthday channel > Copy Channel ID,
-# then set BIRTHDAY_CHANNEL_ID in your .env file (see .env.example).
-BIRTHDAY_CHANNEL_ID = os.getenv("BIRTHDAY_CHANNEL_ID")
-BIRTHDAY_CSV_PATH = os.getenv("BIRTHDAY_CSV_PATH", "birthdays.csv")
-BIRTHDAY_CHECK_HOUR_RAW = os.getenv("BIRTHDAY_CHECK_HOUR", "9")
-BIRTHDAY_TIMEZONE = os.getenv("BIRTHDAY_TIMEZONE", "").strip()
+# then set BIRTHDAY_CHANNEL_ID in your .env file (local) or Railway Variables (hosted).
+BIRTHDAY_CHANNEL_ID = _clean_env("BIRTHDAY_CHANNEL_ID")
+BIRTHDAY_CSV_PATH = _clean_env("BIRTHDAY_CSV_PATH", "birthdays.csv") or "birthdays.csv"
+BIRTHDAY_CHECK_HOUR_RAW = _clean_env("BIRTHDAY_CHECK_HOUR", "9") or "9"
+BIRTHDAY_TIMEZONE = _clean_env("BIRTHDAY_TIMEZONE")
 
 try:
     BIRTHDAY_CHECK_HOUR = int(BIRTHDAY_CHECK_HOUR_RAW)
@@ -41,6 +49,50 @@ logging.basicConfig(
     format="%(asctime)s %(levelname)s %(name)s: %(message)s",
 )
 log = logging.getLogger("hani")
+
+
+def start_health_server() -> None:
+    """Start a tiny HTTP server so Railway (and uptime pingers) see the bot as live.
+
+    Railway injects PORT and expects web services to listen on it. Discord bots
+    don't serve HTTP, so without this the service can look unhealthy / restart.
+    This stdlib-only server answers GET / and /health with 200 OK in a daemon
+    thread — no extra dependencies. Harmless for Worker services too.
+    Disable Railway healthchecks OR keep them pointed at / — both work.
+    """
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):  # noqa: N802
+            body = b"OK: Hani is alive"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/plain; charset=utf-8")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            try:
+                self.wfile.write(body)
+            except (BrokenPipeError, ConnectionResetError):
+                pass
+
+        def log_message(self, fmt, *args):  # keep Railway logs clean
+            return
+
+    port_raw = _clean_env("PORT", "8080") or "8080"
+    try:
+        port = int(port_raw)
+    except ValueError:
+        log.warning("PORT %r invalid, defaulting to 8080", port_raw)
+        port = 8080
+
+    try:
+        server = HTTPServer(("0.0.0.0", port), Handler)
+    except OSError:
+        log.exception("Health server could not bind to port %s (bot still runs)", port)
+        return
+
+    thread = threading.Thread(target=server.serve_forever, name="health-server", daemon=True)
+    thread.start()
+    log.info("Health server listening on 0.0.0.0:%s", port)
+
 
 intents = discord.Intents.default()
 intents.members = True
@@ -175,8 +227,16 @@ def build_birthday_message(person: dict) -> str:
 
 
 async def get_birthday_channel() -> discord.abc.Messageable | None:
+    """Resolve ONLY the configured BIRTHDAY_CHANNEL_ID. Never falls back.
+
+    Returns None (and skips posting) when the ID is missing, invalid, or the
+    bot can't see the channel. Birthday wishes are never sent anywhere else.
+    """
     if not BIRTHDAY_CHANNEL_ID:
-        log.warning("BIRTHDAY_CHANNEL_ID is not set; skipping birthday check. Set it in .env (see .env.example).")
+        log.warning(
+            "BIRTHDAY_CHANNEL_ID is not set; skipping birthday post. "
+            "Set it to the birthday channel ID in .env locally / Railway Variables when hosted."
+        )
         return None
     try:
         channel_id = int(BIRTHDAY_CHANNEL_ID)
@@ -190,7 +250,16 @@ async def get_birthday_channel() -> discord.abc.Messageable | None:
         except (discord.NotFound, discord.Forbidden, discord.HTTPException):
             log.exception("Could not fetch birthday channel %s", channel_id)
             return None
-    return channel
+    # Guard: only post to text-capable channels (text, announcement, thread, DM).
+    # Voice/category/forum channels have no .send — skip instead of crashing.
+    if not hasattr(channel, "send"):
+        log.error(
+            "BIRTHDAY_CHANNEL_ID %s is %s, which cannot receive messages. Use a text channel ID.",
+            channel_id,
+            type(channel).__name__,
+        )
+        return None
+    return channel  # type: ignore[return-value]
 
 
 async def check_and_send_birthdays(today: datetime.date | None = None, send: bool = True) -> list[dict]:
@@ -248,6 +317,10 @@ async def _before_birthday_loop():
 @client.event
 async def on_ready():
     log.info("Logged in as %s (id=%s)", client.user, client.user.id)
+    if BIRTHDAY_CHANNEL_ID:
+        log.info("Birthday channel ID: %s (birthdays post ONLY there)", BIRTHDAY_CHANNEL_ID)
+    else:
+        log.warning("BIRTHDAY_CHANNEL_ID not set — birthdays will be detected but NOT posted.")
     if getattr(client, "_commands_synced", False):
         if not birthday_loop.is_running():
             try:
@@ -257,10 +330,18 @@ async def on_ready():
         return
     try:
         if GUILD_ID:
-            guild = discord.Object(id=int(GUILD_ID))
-            tree.copy_global_to(guild=guild)
-            synced = await tree.sync(guild=guild)
-            log.info("Synced %d guild commands to %s (instant)", len(synced), GUILD_ID)
+            try:
+                guild = discord.Object(id=int(GUILD_ID))
+            except ValueError:
+                log.error("GUILD_ID is not a valid integer: %r — falling back to global sync", GUILD_ID)
+                guild = None
+            if guild is not None:
+                tree.copy_global_to(guild=guild)
+                synced = await tree.sync(guild=guild)
+                log.info("Synced %d guild commands to %s (instant)", len(synced), GUILD_ID)
+            else:
+                synced = await tree.sync()
+                log.info("Synced %d global commands", len(synced))
         else:
             # Guild sync is instant; global sync can take up to 1 hour to appear.
             for guild in client.guilds:
@@ -354,8 +435,19 @@ async def birthdays_today(interaction: discord.Interaction):
 def main():
     if not TOKEN:
         raise SystemExit(
-            "DISCORD_TOKEN is missing. Copy .env.example to .env and fill it in."
+            "DISCORD_TOKEN is missing. Copy .env.example to .env and fill it in. "
+            "On Railway, set it in Variables instead."
         )
+    if not BIRTHDAY_CHANNEL_ID:
+        log.warning(
+            "BIRTHDAY_CHANNEL_ID is not set — birthdays will NOT be posted. "
+            "Set it to your birthday channel's ID (Developer Mode > right-click channel > Copy Channel ID)."
+        )
+    elif not BIRTHDAY_CHANNEL_ID.isdigit():
+        log.error("BIRTHDAY_CHANNEL_ID %r is not numeric — birthdays will NOT be posted.", BIRTHDAY_CHANNEL_ID)
+    # Keep Railway / uptime pingers happy: listen on $PORT with a 200 OK health endpoint.
+    start_health_server()
+    # discord.py auto-reconnects; Railway restarts the process if it ever exits.
     client.run(TOKEN)
 
 

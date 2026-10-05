@@ -38,6 +38,9 @@ Built with Python and [discord.py](https://discordpy.readthedocs.io/).
 
 ## Birthdays
 
+Birthdays post **only** to `BIRTHDAY_CHANNEL_ID` — never to any other channel.
+If the ID is missing/invalid, Hani logs a warning and skips posting.
+
 1. **Set the channel:** in `.env`, paste the channel ID here:
    ```ini
    BIRTHDAY_CHANNEL_ID=1341435970934804601
@@ -75,3 +78,33 @@ Built with Python and [discord.py](https://discordpy.readthedocs.io/).
   Run `/birthdays_today` to preview today's matches + message without double-posting.
   Tip for testing: add a row with today's `MM-DD` + your `user_id`, restart the bot,
   and check the birthday channel.
+
+## Hosting on Railway (always live)
+
+Hani is Railway-ready: `railway.json` (start `python bot.py`, restart on failure),
+`Procfile`, and a built-in health server that listens on Railway's `$PORT` and
+answers `GET /` with `200 OK` so the service stays green.
+
+1. Push this repo to GitHub (`.env` and `birthdays.csv` stay local — both are gitignored).
+2. In [Railway](https://railway.app), **New Project > Deploy from GitHub**, pick this repo.
+3. Open the service > **Variables** and add the same keys as `.env.example`:
+   - `DISCORD_TOKEN` (required — from the Discord Developer Portal, never commit it)
+   - `BIRTHDAY_CHANNEL_ID` (required — right-click birthday channel > Copy Channel ID;
+     birthdays go **only** here)
+   - `WELCOME_CHANNEL_ID`, `HANI_LINK_URL`, `GUILD_ID`, `BIRTHDAY_CHECK_HOUR`,
+     `BIRTHDAY_TIMEZONE` as needed.
+   - Do **not** set `PORT` yourself — Railway injects it.
+4. Deploy. Logs should show `Logged in as Hani` + `Health server listening on 0.0.0.0:<PORT>`.
+5. Keep it always live:
+   - Railway restarts the bot automatically if it crashes (`restartPolicyType: ON_FAILURE`).
+   - discord.py auto-reconnects on Discord disconnects.
+   - Optional but recommended: add an UptimeRobot / BetterUptime / cron-job.org monitor
+     pinging `https://<your-service>.up.railway.app/` every 5 minutes so you get alerted
+     if it ever goes down. The endpoint always returns `OK: Hani is alive`.
+   - `birthdays.csv` is gitignored, so Railway won't have it — upload your birthday list
+     via Railway **Volumes** (mount at `/app`, put `birthdays.csv` there) or switch
+     `BIRTHDAY_CSV_PATH` to a hosted source later. Without the file Hani logs
+     `Birthday CSV not found` and posts nothing (never crashes).
+
+> Security: never put your real `DISCORD_TOKEN` in code or `.env.example`.
+> If a token ever leaks, reset it in the Developer Portal > Bot > Reset Token.
